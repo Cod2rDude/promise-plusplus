@@ -19,7 +19,7 @@
                         "libs": {
                             "$path": "src/libs"
                         },
-                        "log": {
+                        "__log__": {
                             "$path": "src/__log__"
                         }
                     }

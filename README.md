@@ -16,29 +16,30 @@
 ## Table of Contents
 - [Table of Contents](#table-of-contents)
 - [Why does this even exist?](#why-does-this-even-exist)
-    - [What is a promise?](#what-is-a-promise)
+	- [What is a promise?](#what-is-a-promise)
 - [Features](#features)
 - [Installation](#installation)
 - [Usage](#usage)
 - [API](#api)
 - [Found a Bug?](#found-a-bug)
 - [Contribution](#contribution)
-  - [Contributing](#contributing)
-  - [Guidelines](#guidelines)
+	- [Contributing](#contributing)
+	- [Guidelines](#guidelines)
 - [LICENSE](#license)
 - [References](#references)
 
 ## Why does this even exist?
 I do not know but it's cool right? Im kidding here is why it really exists,
 
-#### What is a promise?
+### What is a promise?
 Promise is an object that acts as a proxy for a result that is initially unknown, usually because the computation of its value is not yet complete. It allows you to associate handlers with an asynchronous action's eventual success value or failure reason.
 
 More basically, instead of halting your main process (simply the script where you created the promise) waiting for return or failure of a function that takes time to process (eg: datastore or https request), it runs that function in background and handles failure or success results by itself thus never making your main process wait.
 
-Promise-plusplus aims to be a lightweight and fast library while keeping Promise-A+ standard.
+Promise-plusplus aims to be a lightweight and fast library while keeping Promise-A+ standard. But do not expect it to be like evaera's promise module as it is a bit different and has less functions.
 
 ## Features
+
 
 ## Installation
 To install this to your computer you have this options;
@@ -55,9 +56,10 @@ To install this to your computer you have this options;
 Wally will be added in future.
 
 ## Usage
+please dont.
 
 ## API
-Please check out source code for further info about api.
+Please check out [source code](./src/libs/constructor.luau) for further info about api.
 
 ## Found a Bug?
 If you encounter any issues or unexpected behavior, please let me know! Your feedback helps make this library more stable.

@@ -11,7 +11,8 @@
             "$className": "Folder",
             "$path": "src/libs"
         },
-        "log": {
+        "__log__": {
+			"$className": "Folder",
             "$path": "src/__log__"
         }
     }
