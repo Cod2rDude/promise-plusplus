@@ -5,7 +5,7 @@
 	* @date			:	January 7 2026
 	* @lastEdit		:	January 7 2026
 	* @brief		:	A lightweight promise library.
-	* @version		:	0.0.2
+	* @version		:	0.0.4
 	******************************************************************************
 	* @attention
 	*

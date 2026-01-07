@@ -5,9 +5,9 @@
 	* @file		: .../src/libs/constructor.lua
 	* @author	: Cod2rDude
 	* @date		: January 7 2026
-	* @lastEdit	: January 7 2026 @ 16:35
+	* @lastEdit	: January 7 2026 @ 23:56
 	* @brief	: Promise constructor.
-	* @version	: 0.0.1
+	* @version	: 0.1.1
 	******************************************************************************
 	* @attention
 	*
@@ -35,20 +35,85 @@ type methods				= {
 	catch 					: (self : i_promise, reason : types.rejectReason | string, callback : () -> ()) -> (methods),
 	finally					: (self : i_promise, callback : () -> ()) -> (methods),
 	catchAll				: (self : i_promise, callback : () -> ()) -> (methods),
+	run						: (self : i_promise) -> (methods),
+	await					: (self : i_promise) -> (),
 }
 
 export type promise			= typeof(setmetatable({} :: i_promise, {} :: methods))
 
 --// Logs
 local callbackIsntFunction	= 0x5
+local bothCantBeNonFunction	= 0x6
+local reasonMustBeNumOrStr	= 0x7
 
 --// Lib Decleration
 local constructor			= {}
+
+--// Lib Variables
 constructor.__index			= constructor
 
 --// Lib Functions
 function constructor.is(object : any)
 	return type(object) == "table" and getmetatable(object) == constructor
+end
+
+function constructor.resolve(self : promise, value : any?)
+	if self.state ~= enums.promiseState.pending and self.state ~= enums.promiseState.waiting then return end
+
+	self.state = enums.promiseState.resolved
+	self.value = value
+
+	for _, resolveCallback in pairs(self._onResolved) do
+		task.spawn(resolveCallback, value)
+	end
+		
+	for _, finallyCallback in pairs(self._finally) do
+		task.spawn(finallyCallback)
+	end
+end
+
+function constructor.reject(self : promise, reason : types.rejectReason | string)
+	if self.state ~= enums.promiseState.pending then return end
+	if type(reason) ~= "string" and type(reason) ~= "number" then
+		__log__.new(reasonMustBeNumOrStr, {"catch"})
+		reason = enums.promiseRejectReason.wrongReason
+	end
+
+	self.state = enums.promiseState.rejected
+	self.value = reason
+
+	for _, rejectCallback in pairs(self._onRejected) do
+		task.spawn(rejectCallback, reason)
+	end
+
+	if self._catch[reason] then
+		for _, catchCallback in pairs(self._catch[reason]) do
+			task.spawn(catchCallback)
+		end
+	else
+		for _, catchAllCallback in pairs(self._catchAll) do
+			task.spawn(catchAllCallback, reason)
+		end
+	end
+
+	for _, finallyCallback in pairs(self._finally) do
+		task.spawn(finallyCallback)
+	end
+end
+
+function constructor.execute(self : promise)
+	local r1  = function(val) constructor.resolve(self, val) end
+	local r2  = function(err) constructor.reject(self, err) end
+
+	self.myThread = task.spawn(function()
+		local success, err = xpcall(function()
+			self._callback(r1, r2)
+		end, debug.traceback)
+
+		if not success then
+			constructor.reject(self, err)
+		end
+	end)
 end
 
 --[[
@@ -59,7 +124,8 @@ end
 	*	@r1 promise Created promise object.
 ]]
 constructor.new				= function(
-	callback : (onResolved : (any) -> (), onRejected : (types.rejectReason | string) -> ()) -> ()
+	callback : (onResolved : (any) -> (), onRejected : (types.rejectReason | string) -> ()) -> (),
+	runImmediate : boolean
 ) : promise
 	if not utils.isFunction(callback) then
 		__log__.new(callbackIsntFunction, {})
@@ -67,9 +133,10 @@ constructor.new				= function(
 	end
 	
 	local data : i_promise	= {
-		state 				= enums.promiseState.pending,
+		state 				= enums.promiseState.waiting,
 		myThread 			= nil,
 		value 				= nil,
+		_callback			= callback,
 		
 		_onResolved 		= {},
 		_onRejected 		= {},
@@ -80,55 +147,10 @@ constructor.new				= function(
 
 	local self = setmetatable(data, constructor) :: promise
 
-	local function resolve(value : any?)
-		if self.state ~= enums.promiseState.pending then return end
-
-		self.state = enums.promiseState.resolved
-		self.value = value
-
-		for _, resolveCallback in pairs(self._onResolved) do
-			task.spawn(resolveCallback, value)
-		end
-		
-		for _, finallyCallback in pairs(self._finally) do
-			task.spawn(finallyCallback)
-		end
+	if runImmediate then
+		self.state = enums.promiseState.pending
+		constructor.execute(self)
 	end
-
-	local function reject(reason : types.rejectReason | string)
-		if self.state ~= enums.promiseState.pending then return end
-
-		self.state = enums.promiseState.rejected
-		self.value = reason
-
-		for _, rejectCallback in pairs(self._onRejected) do
-			task.spawn(rejectCallback, reason)
-		end
-
-		if self._catch[reason] then
-			for _, catchCallback in pairs(self._catch[reason]) do
-				task.spawn(catchCallback)
-			end
-		else
-			for _, catchAllCallback in pairs(self._catchAll) do
-				task.spawn(catchAllCallback, reason)
-			end
-		end
-		
-		for _, finallyCallback in pairs(self._finally) do
-			task.spawn(finallyCallback)
-		end
-	end
-
-	self.myThread = task.defer(function()
-		local success, err = xpcall(function()
-			callback(resolve, reject)
-		end, debug.traceback)
-
-		if not success then
-			reject(err)
-		end
-	end)
 
 	return self
 end
@@ -147,55 +169,58 @@ end
 ]]
 function constructor:after(fullfilled : () -> ()?, rejected : () -> ()?)
 	-- I used ai while writing this function's header^^
+	local isFunction1 = utils.isFunction(fullfilled)
+	local isFunction2 = utils.isFunction(rejected)
+
+	if not isFunction2
+	 and not isFunction1
+	then
+		__log__.new(bothCantBeNonFunction, {})
+		return self
+	end
+
+	-- necessary?
+	if not isFunction1 then
+		fullfilled = nil
+	end
+
+	if not isFunction2 then
+		rejected = nil
+	end
 
 	local self : promise = self
 
 	return constructor.new(function(resolve, reject)
-		local function handleResolve(value : any?)
-			if fullfilled then
-				local success, result = pcall(fullfilled, value)
-
-				if success then
-					if constructor.is(result) then
-						result:after(resolve, reject)
-					else
-						resolve(result)
-					end
-				else
-					reject(result)
-				end
-			else
-				resolve(value)
+		local function handleCallback(callback, val)
+			if not callback then
+				if self.state == enums.promiseState.resolved then resolve(val) else reject(val) end
+				return
 			end
-		end
 
-		local function handleReject(err : types.rejectReason | string)
-			if rejected then
-				local success, newValue = pcall(rejected, err)
+			local success, result = xpcall(function() 
+				return callback(val) 
+			end, debug.traceback)
 
-				if success then
-					if constructor.is(newValue) then
-						newValue:after(resolve, reject)
-					else
-						resolve(newValue)
-					end
+			if success then
+				if constructor.is(result) then
+					result:after(resolve, reject)
 				else
-					reject(newValue)
+					resolve(result)
 				end
 			else
-				reject(err)
+				reject(result)
 			end
 		end
 
 		if self.state == enums.promiseState.resolved then
-			handleResolve(self.value)
+			handleCallback(fullfilled, self.value)
 		elseif self.state == enums.promiseState.rejected then
-			handleReject(self.value)
+			handleCallback(rejected, self.value)
 		else
-			table.insert(self._onResolved, handleResolve)
-			table.insert(self._onRejected, handleReject)
+			table.insert(self._onResolved, function(val) handleCallback(fullfilled, val) end)
+			table.insert(self._onRejected, function(val) handleCallback(rejected, val) end)
 		end
-	end)
+	end, true)
 end
 
 --[[
@@ -207,11 +232,21 @@ end
 	*	@r1 promise self
 ]]
 function constructor:catch(reason : types.rejectReason | string, callback : () -> ())
+	if not utils.isFunction(callback) then
+		__log__.new(callbackIsntFunction, {"catch"})
+		return self
+	end
+
+	if type(reason) ~= "string" and type(reason) ~= "number" then
+		__log__.new(reasonMustBeNumOrStr, {"catch"})
+		return self
+	end
+	
 	local self : promise = self
 
 	if self.value == reason and self.state == enums.promiseState.rejected then
 		task.spawn(callback)
-		return
+		return self
 	end
 
 	if not self._catch[reason] then
@@ -231,9 +266,14 @@ end
 	*	@r1 promise self
 ]]
 function constructor:finally(callback : () -> ())
+	if not utils.isFunction(callback) then
+		__log__.new(callbackIsntFunction, {"finally"})
+		return self
+	end
+
 	local self : promise = self
 
-	if self.state == enums.promiseState.pending then 
+	if self.state == enums.promiseState.pending or self.state == enums.promiseState.waiting then 
 		table.insert(self._finally, callback)
 	else
 		task.spawn(callback)
@@ -251,15 +291,128 @@ end
 	*	@r1 promise self
 ]]
 function constructor:catchAll(callback : (reason : types.rejectReason | string) -> ())
+	if not utils.isFunction(callback) then
+		__log__.new(callbackIsntFunction, {"catchAll"})
+		return self
+	end
+	
 	local self : promise = self
 
 	if self.state == enums.promiseState.rejected then
-		task.spawn(callback, self.value)
+		if not self._catch[self.value] then
+			task.spawn(callback, self.value)
+		end
 	else
 		table.insert(self._catchAll, callback)
 	end
 
 	return self
+end
+
+--[[
+	@brief Yields current thread until promise finishes.
+	@returns
+	*	@r1 thread
+]]
+function constructor:await()
+	local self : promise = self
+
+	if self.state == enums.promiseState.resolved then
+		return true, self.value
+	elseif self.state == enums.promiseState.rejected then
+		return false, self.value
+	end
+
+	local thisThread = coroutine.running()
+
+	self:finally(function()
+		task.spawn(thisThread, self.state == enums.promiseState.resolved, self.value)
+	end)
+
+	return coroutine.yield()
+end
+
+--[[
+	@brief Starts executing promise.
+	@returns
+	*	@r1 promise self
+]]
+function constructor:run()
+	local self : promise = self
+
+	if self.state ~= enums.promiseState.waiting then return self end
+
+	self.state = enums.promiseState.pending
+	constructor.execute(self)
+
+	return self
+end
+
+--[[
+	@params
+	*	@param self : promise Promise to be canceled.
+	@brief Cancels given promise and puts it in canceled state.
+]]
+function constructor.cancel(self : promise)
+	--[[
+		Stops the promise immediately
+	]]
+
+	if self.state ~= enums.promiseState.pending then return end
+
+	self.state = enums.promiseState.canceled
+
+	if self.myThread then
+		pcall(task.cancel, self.myThread) 
+		self.myThread = nil
+	end
+
+	for _, callback : () -> () in pairs(self._finally) do
+		if typeof(callback) == "function" then
+			task.spawn(callback)
+		end
+	end
+end
+
+--[[
+	@params
+	*	@param self : promise Promise to be cleaned.
+	@brief Cleans a promise and puts it in dead state.
+]]
+function constructor.cleanup(self : promise)
+	--[[
+		Literally cleans a promise and puts it in dead state
+	]]
+
+	constructor.cancel(self)
+
+	self.state = enums.promiseState.dead
+	
+	table.clear(self._onRejected)
+	table.clear(self._onResolved)
+	table.clear(self._catch)
+	table.clear(self._catchAll)
+	table.clear(self._finally)
+
+	self.myThread = nil
+	self._callback = nil
+end
+
+-- @todo
+function constructor.race()
+	--[[
+		In a given list of promises or functions,
+		does something or returns something when one of
+		them finishes or resolves.
+	]]
+end
+
+-- @todo
+function constructor.all()
+	--[[
+		In a given list of promises or functions,
+		does something when all of them finishes.
+	]]
 end
 
 return constructor
