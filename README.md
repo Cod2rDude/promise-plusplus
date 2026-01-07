@@ -1,4 +1,4 @@
-<h1 id="queues" align="center">queues</h1>
+<h1 id="queues" align="center">promise-plusplus</h1>
 <div align="center">
     <img src="https://img.shields.io/badge/version-0.0.1-orange" alt="Version">
     <br/>
@@ -10,7 +10,7 @@
     <img src="https://img.shields.io/badge/Open%20Source-%E2%9D%A4-brightgreen" alt="Luau">
 </div>
 <div align="center">
-    A light-weight
+    A light-weight promise library
 </div>
 
 ## Table of Contents
