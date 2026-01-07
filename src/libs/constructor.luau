@@ -1,13 +1,13 @@
---!nolint LocalShadow
+--!nolint
 
 --[[
 	******************************************************************************
 	* @file		: .../src/libs/constructor.lua
 	* @author	: Cod2rDude
 	* @date		: January 7 2026
-	* @lastEdit	: January 7 2026 @ 23:56
+	* @lastEdit	: January 8 2026 @ 00:09
 	* @brief	: Promise constructor.
-	* @version	: 0.1.1
+	* @version	: 0.1.2
 	******************************************************************************
 	* @attention
 	*
@@ -28,18 +28,16 @@ local utils					= require(script.Parent.global.utils)
 local __log__				= require(script.Parent.Parent.__log__.__log__)
 
 --// Custom Type Definitions/Declerations
-type i_promise				= types.promise
 type methods				= {
 	__index					: methods,
-	after 					: (self : i_promise, fullfilled : () -> ()?, rejected : () -> ()?) -> (methods),
-	catch 					: (self : i_promise, reason : types.rejectReason | string, callback : () -> ()) -> (methods),
-	finally					: (self : i_promise, callback : () -> ()) -> (methods),
-	catchAll				: (self : i_promise, callback : () -> ()) -> (methods),
-	run						: (self : i_promise) -> (methods),
-	await					: (self : i_promise) -> (),
+	after 					: (self : methods, fullfilled : () -> ()?, rejected : () -> ()?) -> (methods),
+	catch 					: (self : methods, reason : types.rejectReason | string, callback : () -> ()) -> (methods),
+	finally					: (self : methods, callback : () -> ()) -> (methods),
+	catchAll				: (self : methods, callback : () -> ()) -> (methods),
+	run						: (self : methods) -> (methods),
+	await					: (self : methods) -> (),
 }
-
-export type promise			= typeof(setmetatable({} :: i_promise, {} :: methods))
+type i_promise				= types.promise
 
 --// Logs
 local callbackIsntFunction	= 0x5
@@ -48,6 +46,9 @@ local reasonMustBeNumOrStr	= 0x7
 
 --// Lib Decleration
 local constructor			= {}
+
+--// Lib Types
+export type promise			= typeof(setmetatable({} :: i_promise, {} :: typeof(constructor)))
 
 --// Lib Variables
 constructor.__index			= constructor
@@ -107,7 +108,9 @@ function constructor.execute(self : promise)
 
 	self.myThread = task.spawn(function()
 		local success, err = xpcall(function()
-			self._callback(r1, r2)
+			if self._callback then
+				self._callback(r1, r2)
+			end
 		end, debug.traceback)
 
 		if not success then
@@ -126,13 +129,13 @@ end
 constructor.new				= function(
 	callback : (onResolved : (any) -> (), onRejected : (types.rejectReason | string) -> ()) -> (),
 	runImmediate : boolean
-) : promise
+) : promise?
 	if not utils.isFunction(callback) then
 		__log__.new(callbackIsntFunction, {})
 		return
 	end
 	
-	local data : i_promise	= {
+	local data : types.promise	= {
 		state 				= enums.promiseState.waiting,
 		myThread 			= nil,
 		value 				= nil,
@@ -145,7 +148,7 @@ constructor.new				= function(
 		_catchAll 			= {}, 
 	}
 
-	local self = setmetatable(data, constructor) :: promise
+	local self = setmetatable(data, constructor)
 
 	if runImmediate then
 		self.state = enums.promiseState.pending
@@ -187,8 +190,6 @@ function constructor:after(fullfilled : () -> ()?, rejected : () -> ()?)
 	if not isFunction2 then
 		rejected = nil
 	end
-
-	local self : promise = self
 
 	return constructor.new(function(resolve, reject)
 		local function handleCallback(callback, val)
@@ -241,8 +242,6 @@ function constructor:catch(reason : types.rejectReason | string, callback : () -
 		__log__.new(reasonMustBeNumOrStr, {"catch"})
 		return self
 	end
-	
-	local self : promise = self
 
 	if self.value == reason and self.state == enums.promiseState.rejected then
 		task.spawn(callback)
@@ -271,8 +270,6 @@ function constructor:finally(callback : () -> ())
 		return self
 	end
 
-	local self : promise = self
-
 	if self.state == enums.promiseState.pending or self.state == enums.promiseState.waiting then 
 		table.insert(self._finally, callback)
 	else
@@ -295,8 +292,6 @@ function constructor:catchAll(callback : (reason : types.rejectReason | string) 
 		__log__.new(callbackIsntFunction, {"catchAll"})
 		return self
 	end
-	
-	local self : promise = self
 
 	if self.state == enums.promiseState.rejected then
 		if not self._catch[self.value] then
@@ -315,8 +310,6 @@ end
 	*	@r1 thread
 ]]
 function constructor:await()
-	local self : promise = self
-
 	if self.state == enums.promiseState.resolved then
 		return true, self.value
 	elseif self.state == enums.promiseState.rejected then
@@ -338,8 +331,6 @@ end
 	*	@r1 promise self
 ]]
 function constructor:run()
-	local self : promise = self
-
 	if self.state ~= enums.promiseState.waiting then return self end
 
 	self.state = enums.promiseState.pending
@@ -354,10 +345,6 @@ end
 	@brief Cancels given promise and puts it in canceled state.
 ]]
 function constructor.cancel(self : promise)
-	--[[
-		Stops the promise immediately
-	]]
-
 	if self.state ~= enums.promiseState.pending then return end
 
 	self.state = enums.promiseState.canceled

@@ -3,9 +3,9 @@
 	* @name			:	promise-plusplus
 	* @authors		:	Cod2rDude
 	* @date			:	January 7 2026
-	* @lastEdit		:	January 7 2026
+	* @lastEdit		:	January 8 2026
 	* @brief		:	A lightweight promise library.
-	* @version		:	0.0.4
+	* @version		:	0.0.5
 	******************************************************************************
 	* @attention
 	*
