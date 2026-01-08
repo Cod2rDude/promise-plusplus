@@ -1,13 +1,11 @@
---!nolint
-
 --[[
 	******************************************************************************
 	* @file		: .../src/libs/constructor.lua
 	* @author	: Cod2rDude
 	* @date		: January 7 2026
-	* @lastEdit	: January 8 2026 @ 00:09
+	* @lastEdit	: January 8 2026 @ 22:30
 	* @brief	: Promise constructor.
-	* @version	: 0.1.2
+	* @version	: 0.1.3
 	******************************************************************************
 	* @attention
 	*
@@ -43,6 +41,15 @@ type i_promise				= types.promise
 local callbackIsntFunction	= 0x5
 local bothCantBeNonFunction	= 0x6
 local reasonMustBeNumOrStr	= 0x7
+local expectedMoreFunctions	= 0x8
+local errorWhileXpcall		= 0x9
+
+--// Functions
+local function xpcallFunction(functionToXpcall : () -> (...any?)) -- useless ah why am i keeping this.
+	local success, err = xpcall(functionToXpcall, function(err)
+		__log__.new(errorWhileXpcall, {"Reason: "..err, "At promise.constructor.all"})
+	end)
+end
 
 --// Lib Decleration
 local constructor			= {}
@@ -65,11 +72,11 @@ function constructor.resolve(self : promise, value : any?)
 	self.value = value
 
 	for _, resolveCallback in pairs(self._onResolved) do
-		task.spawn(resolveCallback, value)
+		task.defer(resolveCallback, value)
 	end
 		
 	for _, finallyCallback in pairs(self._finally) do
-		task.spawn(finallyCallback)
+		task.defer(finallyCallback)
 	end
 end
 
@@ -84,29 +91,31 @@ function constructor.reject(self : promise, reason : types.rejectReason | string
 	self.value = reason
 
 	for _, rejectCallback in pairs(self._onRejected) do
-		task.spawn(rejectCallback, reason)
+		task.defer(rejectCallback, reason)
 	end
 
 	if self._catch[reason] then
 		for _, catchCallback in pairs(self._catch[reason]) do
-			task.spawn(catchCallback)
+			task.defer(catchCallback)
 		end
 	else
 		for _, catchAllCallback in pairs(self._catchAll) do
-			task.spawn(catchAllCallback, reason)
+			task.defer(catchAllCallback, reason)
 		end
 	end
 
 	for _, finallyCallback in pairs(self._finally) do
-		task.spawn(finallyCallback)
+		task.defer(finallyCallback)
 	end
 end
 
 function constructor.execute(self : promise)
+	if not self._callback then return end
+
 	local r1  = function(val) constructor.resolve(self, val) end
 	local r2  = function(err) constructor.reject(self, err) end
 
-	self.myThread = task.spawn(function()
+	self.myThread = task.defer(function()
 		local success, err = xpcall(function()
 			if self._callback then
 				self._callback(r1, r2)
@@ -184,11 +193,15 @@ function constructor:after(fullfilled : () -> ()?, rejected : () -> ()?)
 
 	-- necessary?
 	if not isFunction1 then
-		fullfilled = nil
+		fullfilled = function(v)
+			return v
+		end
 	end
 
 	if not isFunction2 then
-		rejected = nil
+		rejected = function(reason)
+			return reason
+		end --??????
 	end
 
 	return constructor.new(function(resolve, reject)
@@ -244,7 +257,7 @@ function constructor:catch(reason : types.rejectReason | string, callback : () -
 	end
 
 	if self.value == reason and self.state == enums.promiseState.rejected then
-		task.spawn(callback)
+		task.defer(callback)
 		return self
 	end
 
@@ -273,7 +286,7 @@ function constructor:finally(callback : () -> ())
 	if self.state == enums.promiseState.pending or self.state == enums.promiseState.waiting then 
 		table.insert(self._finally, callback)
 	else
-		task.spawn(callback)
+		task.defer(callback)
 	end
 
 	return self
@@ -295,7 +308,7 @@ function constructor:catchAll(callback : (reason : types.rejectReason | string) 
 
 	if self.state == enums.promiseState.rejected then
 		if not self._catch[self.value] then
-			task.spawn(callback, self.value)
+			task.defer(callback, self.value)
 		end
 	else
 		table.insert(self._catchAll, callback)
@@ -356,7 +369,7 @@ function constructor.cancel(self : promise)
 
 	for _, callback : () -> () in pairs(self._finally) do
 		if typeof(callback) == "function" then
-			task.spawn(callback)
+			task.defer(callback)
 		end
 	end
 end
@@ -394,12 +407,74 @@ function constructor.race()
 	]]
 end
 
--- @todo
-function constructor.all()
-	--[[
-		In a given list of promises or functions,
-		does something when all of them finishes.
-	]]
+--[[
+	@params
+	*	@param list : {[number] : ()->()} Functions to convert to promise.
+	@brief Returns a promise object that will only resolve when all of functions in given @param list resolves succesfully too, if one of them fails,
+	*		it will reject.
+	@returns
+	*	@r1 promise A new promise that will resolve when all of promises converted from given functions resolve succesfully.
+	@todo:
+	*	When resolving return a table of out
+]]
+function constructor.allFunction(
+	list : {[number] : (onResolved : (any) -> (), onRejected : (types.rejectReason | string) -> ()) -> (...any?)}
+)
+	local function returnTableWithFunctionsOnly(t : {any?}) : ({()->()?}, number)
+		local functionTable = {}
+		local count = 0
+
+		for i, v in pairs(t) do
+			if typeof(v) == "function" then
+				table.insert(functionTable)
+				count += 1
+			end
+		end
+
+		return functionTable, count
+	end
+
+	return constructor.new(function(onResolved, onRejected)
+		local fixedList, count = returnTableWithFunctionsOnly(list)
+		local promises : {promise} = {}
+		local promisesCompleted = 0
+		local promisesRejected = 0
+
+		if count < 1 then
+			-- when failed.
+			__log__.new(expectedMoreFunctions, {"Real count: "..tostring(count)})
+			onRejected(enums.promiseRejectReason.expectedMoreFunctions)
+			return
+		end
+
+		for i = 1, #count do
+			if promisesRejected > 0 then
+				table.clear(promises)
+				onRejected(enums.promiseRejectReason.gotRejectionWhileRunning)
+				break
+			end
+
+			local accessedFunction = fixedList[count]
+			local createdPromise = constructor.new(accessedFunction)
+
+			table.insert(promises, createdPromise)
+
+			createdPromise:after(
+				function()
+					promisesCompleted += 1
+
+					if promisesCompleted == count then
+						table.clear(promises)
+
+						onResolved("success")
+					end
+				end,
+				function()
+					promisesRejected += 1
+				end
+			)
+		end
+	end, true)
 end
 
 return constructor

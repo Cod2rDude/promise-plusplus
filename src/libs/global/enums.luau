@@ -9,8 +9,10 @@ return
 		waiting			= 5,
 		dead			= 6
 	},
-	promiseRejectReason	= {
-		timeout			= 1,
-		wrongReason		= 2,
+	promiseRejectReason			= {
+		timeout					= 1,
+		wrongReason				= 2,
+		expectedMoreFunctions	= 3,
+		gotRejectionWhileRunning= 4,
 	}
 }
