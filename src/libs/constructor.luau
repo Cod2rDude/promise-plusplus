@@ -416,10 +416,13 @@ end
 	*	@r1 promise A new promise that will resolve when all of promises converted from given functions resolve succesfully.
 	@todo:
 	*	When resolving return a table of out
+	*	Let list contain promises too
 ]]
 function constructor.allFunction(
-	list : {[number] : (onResolved : (any) -> (), onRejected : (types.rejectReason | string) -> ()) -> (...any?)}
+	list : {[number] : (onResolved : (any) -> (), onRejected : (types.rejectReason | string) -> () | promise) -> (...any?)}
 )
+	-- please test me i seem like i will fail bro!!!
+
 	local function returnTableWithFunctionsOnly(t : {any?}) : ({()->()?}, number)
 		local functionTable = {}
 		local count = 0
