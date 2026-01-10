@@ -3,9 +3,9 @@
 	* @file		: .../src/libs/constructor.lua
 	* @author	: Cod2rDude
 	* @date		: January 7 2026
-	* @lastEdit	: January 10 2026 @ 20:30
+	* @lastEdit	: January 10 2026 @ 20:44
 	* @brief	: Promise constructor.
-	* @version	: 0.1.4
+	* @version	: 0.1.5
 	******************************************************************************
 	* @attention
 	*
@@ -18,6 +18,15 @@
 	*
 	******************************************************************************
 --]]
+
+--[[
+	******************************************************************************
+	* @todo		:	Check if this is really lightweight lol.
+	*				Add race
+	*				Maybe convert all of functions to normal functions which
+	*					expect self parameter and add wrappers for metamethods?
+	******************************************************************************
+]]
 
 --// Libs
 local types					= require(script.Parent.global.types)
@@ -403,29 +412,42 @@ function constructor.cleanup(self : promise)
 	table.clear(self._catchAll)
 	table.clear(self._finally)
 
+	task.cancel(self.myThread) -- This makes sure we cancel the task really.
 	self.myThread = nil
 	self._callback = nil
 end
 
--- @todo
-function constructor.race()
+--[[
+	@params
+	*	@param list : {[number] : ()->() | promise} Functions to convert to promise or promises to race.
+	*	@param returnOutcomes : boolean Whatever to return the outcome of the promise that made @r1 promise resolve.
+	@brief Returns a promise object that will only resolve when any promise in given list resolves.
+	@returns
+	*	@r1 promise A new promise that will resolve when any promise is resolved.
+]]
+function constructor.race(
+	list : {[number] : (onResolved : (any) -> (), onRejected : (types.rejectReason | string | {}) -> () | promise) -> (...any?)},
+	returnOutcome : boolean
+)
 	--[[
 		In a given list of promises or functions,
 		does something or returns something when one of
 		them finishes or resolves.
+
+		When a promise finishes, we should cancel others somehow?
+		What if none makes this resolve?
 	]]
 end
 
 --[[
 	@params
-	*	@param list : {[number] : ()->()} Functions to convert to promise.
+	*	@param list : {[number] : ()->() | promise | any} Functions to convert to promise, promises or static values that will just be added as an outcome.
+	*	@param returnOutcomes : boolean Whatever to return a list of outcomes of given promises.
+	*	@param returnErrors : boolean Whatever to return the error that rejected the returned promise.
 	@brief Returns a promise object that will only resolve when all of functions in given @param list resolves succesfully too, if one of them fails,
 	*		it will reject.
 	@returns
 	*	@r1 promise A new promise that will resolve when all of promises converted from given functions resolve succesfully.
-	@todo:
-	*	When resolving return a table of out
-	*	Let list contain promises too
 ]]
 function constructor.all(
 	list : {[number] : (onResolved : (any) -> (), onRejected : (types.rejectReason | string | {}) -> () | promise | any) -> (...any?)},
