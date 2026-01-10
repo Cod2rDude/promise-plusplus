@@ -9,8 +9,8 @@ export type promise		=
 {
 	state 				: promiseState,
 	myThread			: thread?,
-	value				: any?,
-	_callback			: (onResolved : (any) -> (), onRejected : (rejectReason | string) -> ()) -> ()?,
+	value				: any,
+	_callback			: (onResolved : (any) -> (), onRejected : (rejectReason | string | {}) -> ()) -> ()?,
 
 	_onResolved			: {(any?)->()},								-- This runs for every resolve.
 	_onRejected			: {(reason : number)->()},					-- This runs for every rejection.

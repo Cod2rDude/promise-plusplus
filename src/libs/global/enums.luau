@@ -14,5 +14,6 @@ return
 		wrongReason				= 2,
 		expectedMoreFunctions	= 3,
 		gotRejectionWhileRunning= 4,
-	}
+	},
+	emptyValue			= 0x1F
 }
