@@ -2,10 +2,10 @@
 	******************************************************************************
 	* @file		: .../src/libs/constructor.lua
 	* @author	: Cod2rDude
-	* @date		: January 7 2026
-	* @lastEdit	: January 10 2026 @ 21:31
+	* @date		: January 13 2026
+	* @lastEdit	: January 13 2026 @ 21:31
 	* @brief	: Promise constructor.
-	* @version	: 0.2.0
+	* @version	: 0.2.1
 	******************************************************************************
 	* @attention
 	*
@@ -21,10 +21,15 @@
 
 --[[
 	******************************************************************************
-	* @todo		:	Check if this is really lightweight lol.
-	*				Add race
+	* @notes	:	I'm sick and tired of this sh*t.
+	* @motiv	:	You can’t win. It’s pointless to keep fighting. 
+	*					Why, Mr. Anderson? Why? Why do you persist?
+	* @reworked
 	******************************************************************************
 ]]
+
+--// Services
+local runService			= game:GetService("RunService")
 
 --// Libs
 local types					= require(script.Parent.global.types)
@@ -33,586 +38,425 @@ local utils					= require(script.Parent.global.utils)
 local __log__				= require(script.Parent.Parent.__log__.__log__)
 
 --// Custom Type Definitions/Declerations
+type iPromise				= types.promise
 type methods				= {
 	__index					: methods,
-	after 					: (self : methods, fullfilled : () -> ()?, rejected : () -> ()?) -> (methods),
-	catch 					: (self : methods, reason : types.rejectReason | string, callback : () -> ()) -> (methods),
-	finally					: (self : methods, callback : () -> ()) -> (methods),
-	catchAll				: (self : methods, callback : () -> ()) -> (methods),
-	run						: (self : methods) -> (methods),
-	await					: (self : methods) -> (),
 }
-type i_promise				= types.promise
+
+type enumObject				= types.enumObject
 
 --// Logs
 local callbackIsntFunction	= 0x5
-local reasonMustBeNumOrStr	= 0x6
-local reasonMustBeNumStrT	= 0x7
-local expectedMoreFunctions	= 0x8
+local unknownEnum			= 0x6
+local wrongPromiseState		= 0x7
+local emptyReasonTuple		= 0x8
+local notARejectReason		= 0x9
+local promiseError			= 0xA
+
+--// Functions
+function doWeKnowThisEnum(enum : enumObject, field : types.enumObject) : boolean
+	return field and enum and field[enum.value] and field[field[enum.value]]
+	-- Make sure @param field is never types.enumLibrary
+end
 
 --// Lib Decleration
 local constructor			= {}
 
 --// Lib Types
-export type promise			= typeof(setmetatable({} :: i_promise, {} :: typeof(constructor)))
+export type promise			= typeof(setmetatable({} :: iPromise, {} :: typeof(constructor)))
 
 --// Lib Variables
-constructor.__index			= constructor
+constructor.__index			= constructor -- are you sure this is a variable?
 
 --// Lib Private Functions
-function is(object : any)
-	return type(object) == "table" and getmetatable(object) == constructor
+function isEmpty(...)
+	return select("#", ...) == 0
 end
 
-function resolve_(self : promise, value : any?)
-	if self.state ~= enums.promiseState.pending and self.state ~= enums.promiseState.waiting then return end
+function isEmpty2(t : {})
+	return next(t) == nil
+end
 
-	self.state = enums.promiseState.resolved
-	self.value = value
+function is(object : any?) : boolean
+	return  type(object) == "table" and object.whoAmI == enums.whoAmI
+end
 
-	for _, resolveCallback in ipairs(self._onResolved) do
-		task.defer(resolveCallback, value)
+function expectState(self : promise, expectedState : enumObject)
+	if self.state == expectedState then
+		return true
 	end
-		
-	for _, finallyCallback in ipairs(self._finally) do
-		task.defer(finallyCallback)
+	__log__.new(wrongPromiseState, "Expected '"..expectedState.name.."', Got: "..self.state.name)
+	return false
+end
+
+function willSomeoneHandleThis(self : promise)
+	return not isEmpty2(self._catch)
+		or #self._catchAll > 0
+		or #self._catchUnexpected > 0
+		or #self._onRejected > 0
+end
+
+function isARejectReason(object : any?)
+	if not object then return false end
+	if typeof(object) == "string" then return true end
+	if typeof(object) == "table" then return true end
+
+	return false
+end
+
+function _disownChild(self : promise, child)
+	if self._children[child] then
+		self._children[child] = nil
 	end
 end
 
-function reject_(self : promise, reason : types.rejectReason | string | {})
-	if self.state ~= enums.promiseState.pending then return end
-	if type(reason) ~= "string" and type(reason) ~= "number" and type(reason) ~= "table" then
-		__log__.new(reasonMustBeNumStrT, {"catch"})
-		reason = enums.promiseRejectReason.wrongReason
+function _adopt(daddy : promise, child : promise)
+	child.daddy = daddy
+	daddy._children[child] = true
+end
+
+function _finalize(self : promise)
+	for _, callback in ipairs(self._finally) do
+		pcall(callback)
+	end
+
+	table.clear(self._catch)
+	table.clear(self._catchAll)
+	table.clear(self._catchUnexpected)
+	table.clear(self._finally)
+	table.clear(self._onRejected)
+	table.clear(self._onResolved)
+
+	self.traceback = ""
+end
+
+function _cancel(self : promise)
+	self.state = enums.promiseState.canceled
+
+	if self.myThread then
+		pcall(task.cancel, self.myThread)
+	end
+
+	self.myThread = nil
+	self._executable = nil
+
+	if self._cancellation then
+		pcall(self._cancellation)
+	end
+
+	for _, eachPromise : promise in pairs(self._children) do
+		_cancel(eachPromise)
+	end
+
+	if is(self.daddy) then
+		_disownChild(self.daddy :: promise, self)
+	end
+
+	_finalize(self)
+end
+
+function _reject(self : promise, ...)
+	if not expectState(self, enums.promiseState.pending) then return end
+
+	local reason : types.rejectReason = enums.promiseRejectReason.noReason
+	local remaining = {}
+
+	if not isEmpty(...) then
+		local firstItem = select(1, ...)
+
+		if not isARejectReason(firstItem) then
+			__log__.new(notARejectReason, {"Expected:", firstItem and typeof(firstItem) or "nil"})
+		else
+			reason = firstItem
+		end
+
+		remaining = table.pack(...)
+	else
+		__log__.new(emptyReasonTuple, "")
 	end
 
 	self.state = enums.promiseState.rejected
-	self.value = reason
+	self.value = {
+		outcomes = remaining,
+		error = reason,
+		traceback = self.traceback
+	} :: types.promiseResult
+
+	-- What even is this.
+	local whatsThis = (typeof(reason) == "table" and reason["name"] and reason["value"]) and "enum" or (
+					typeof(reason) == "table" and "table" or "string")
+
+	local errorMessage = reason
+
+	if whatsThis == "enum" then local r = reason :: enumObject; errorMessage = r.name end
+	if whatsThis == "table" then local r = reason :: {}; errorMessage = table.concat(r) end
+
+	if not willSomeoneHandleThis(self) then
+		coroutine.wrap(function(...) 
+			runService.Heartbeat:Wait()
+
+			if willSomeoneHandleThis(self) then return end
+
+			__log__.new(promiseError, 
+			{
+				"Error Message:",
+				errorMessage,
+				"Traceback:",
+				self.traceback and self.traceback or ""
+			})
+		end)()
+		return
+	end
 
 	for _, rejectCallback in ipairs(self._onRejected) do
 		task.defer(rejectCallback, reason)
 	end
 
-	-- We dont need to check if its a table since a table cant have a table as index so line below will result nil for every table
-	if type(reason) == "table" then 
-		for _, catchUnexpectedCallback in ipairs(self._catchUnexpected) do
-			task.defer(catchUnexpectedCallback, reason)
+	if whatsThis ~= "table" and self._catch[errorMessage] then
+		for i, v : () -> () in pairs(self._catch[errorMessage]) do
+			task.defer(v)
 		end
-	elseif self._catch[reason] then
-		for _, catchCallback in ipairs(self._catch[reason]) do
-			task.defer(catchCallback)
+	else
+		for i, v : (reason : types.rejectReason) -> () in ipairs(self._catchUnexpected) do
+			task.defer(v, reason)
 		end
 	end
 
-	for _, catchAllCallback in ipairs(self._catchAll) do
+	for i, catchAllCallback : (reason : types.rejectReason) -> () in ipairs(self._catchAll) do
 		task.defer(catchAllCallback, reason)
 	end
 
-	for _, finallyCallback in ipairs(self._finally) do
-		task.defer(finallyCallback)
-	end
+	_finalize(self)
 end
 
-function execute(self : promise)
-	if not self._callback then return end
+function _resolve(self : promise, ...)
+	if not expectState(self, enums.promiseState.pending) then return end
 
-	local r1  = function(val) resolve_(self, val) end
-	local r2  = function(err) reject_(self, err) end
+	if is((...)) then -- if its a promise
+		local myPromise = ... :: promise
+ 
+		local newPromise = constructor._after(myPromise, function(...)
+			_resolve(self, ...)
+		end, function(...)
+			_reject(self, ...)
+		end) :: promise
 
-	self.myThread = task.defer(function()
-		local success, err = xpcall(function()
-			if self._callback then
-				self._callback(r1, r2)
-			end
-		end, function(err)
-			return err
-		end)
+		if newPromise.state == enums.promiseState.canceled then
+			_cancel(self)
+		elseif newPromise.state == enums.promiseState.pending then
+			_adopt(newPromise, self)
+		end
+
+		return
+	end
+
+	self.state = enums.promiseState.resolved
+	self.value = {
+		outcomes = {...},
+		error = nil,
+		traceback = self.traceback
+	} :: types.promiseResult
+
+	for _, callback in ipairs(self._onResolved) do
+		pcall(callback, table.unpack(self.value.outcomes))
+	end
+
+	_finalize(self)
+end
+
+function _prepareAndExecute(self : promise, executionType : types.enumObject)
+	if self.state ~= enums.promiseState.waiting then 
+		__log__.new(wrongPromiseState, "Expected '".."waiting', Got: "..self.state.name)
+		return 
+	end
+
+	if not doWeKnowThisEnum(executionType, enums.executionType) then
+		__log__.new(unknownEnum, "Given enum code is '"..tostring(executionType).."'")
+		executionType = enums.executionType.immediate
+	end
+
+	if not utils.isFunction(self._executable) then
+		__log__.new(callbackIsntFunction, "Given type: "..typeof(self._executable))
+		self._executable = function(...) return ... end
+	end
+
+	local r1 = function(val) _resolve(self, val) end
+	local r2 = function(err) _reject(self, err) end
+	local r3 = function(callback : () -> ()) 
+		if not utils.isFunction(callback) then
+			__log__.new(callbackIsntFunction, "From onCancel")
+			return
+		end
+
+		if self.state == enums.promiseState.canceled then
+			pcall(callback)
+		else
+			self._cancellation = callback
+		end
+	end
+
+	local isThisDefer = executionType == enums.executionType.defer
+	local handler = isThisDefer and task.defer or task.spawn
+
+	self.myThread = handler(function()
+		local success, v = xpcall(self._executable :: (...any?) -> (...any?), function(a0) 
+			return a0
+		end, r1, r2, r3)
 
 		if not success then
-			reject_(self, err)
+			_reject(self, v)
 		end
 	end)
+
+	self.state = enums.promiseState.pending
 end
 
 --// Lib Public Functions
 
---[[
-	@params
-	*	@param self : promise Promise to connect an after
-	*	@param fullfilled : (value: any?) -> any? Callback triggered on successful resolution.
-	*	@param rejected   : (err: any?) -> any?   Callback triggered on promise failure.
-	@brief Chains a new asynchronous operation to the current promise.
-	@returns
-	*	@r1 promise A new promise instance that follows the state of the callbacks.
-	@notes
-	*	If a callback returns a promise, the chain "waits" (Unwraps) for that promise.
-	*	If no callback is provided for a state, the value/error is "Passed Through."
-	*	All callbacks are wrapped in pcall to catch runtime exceptions and trigger rejections.
-]]
-function constructor._after(self : promise, fullfilled : () -> ()?, rejected : () -> ()?)
-	-- I used ai while writing this function's header^^
-	local isFunction1 = utils.isFunction(fullfilled)
-	local isFunction2 = utils.isFunction(rejected)
+function constructor._run()
 
-	-- necessary?
-	if not isFunction1 then
-		fullfilled = function(v)
-			return v
-		end
+end
+
+function constructor._cancel()
+
+end
+
+function constructor._after(self : promise, fullfilled : (...any) -> (), rejected : (types.rejectReason) -> ())
+	if self.state == enums.promiseState.canceled then
+		local newPromise = constructor._new(self.traceback, function() end, false, self)
+		_cancel(self)
+		return newPromise
 	end
 
-	if not isFunction2 then
-		rejected = function(reason)
-			return error(reason)
-		end
-	end
-
-	return constructor.new(function(resolve, reject)
-		local function handleCallback(callback, val)
-			local success, result = xpcall(function() 
-				return callback(val) 
-			end, function(err)
-				return err
-			end)
-
-			if success then
-				if is(result) then
-					result:after(resolve, reject)
-				else
-					resolve(result)
-				end
+	local function bridge(chainedPromise : promise, callback : (...any) -> () | (types.rejectReason) -> (), ...)
+		if not callback then
+			if self.state == enums.promiseState.rejected then
+				_reject(chainedPromise, ...)
 			else
-				reject(result)
+				_resolve(chainedPromise, ...)
 			end
+			return
 		end
 
-		if self.state == enums.promiseState.resolved then
-			handleCallback(fullfilled, self.value)
-		elseif self.state == enums.promiseState.rejected then
-			handleCallback(rejected, self.value)
+		local success, result = pcall(callback, ...)
+
+		if not success then
+			_reject(chainedPromise, result)
 		else
-			table.insert(self._onResolved, function(val) handleCallback(fullfilled, val) end)
-			table.insert(self._onRejected, function(val) handleCallback(rejected, val) end)
+			_resolve(chainedPromise, result)
 		end
-	end, true)
-end
-
---[[
-	@params
-	*	@param self : promise Promise to add callback for an expected reason.
-	*	@param reason : string | number Expected reason of rejection.
-	*	@param callback : function Function to run when promise gets rejected with expected reason
-	@brief Adds an error expectation to promise, only gets called when promise gets rejected with @param reason.
-	@returns
-	*	@r1 promise self
-]]
-function constructor._catch(self : promise, reason : types.rejectReason | string, callback : () -> ())
-	if not utils.isFunction(callback) then
-		__log__.new(callbackIsntFunction, {"catch"})
-		return self
 	end
 
-	if type(reason) ~= "string" and type(reason) ~= "number" then
-		__log__.new(reasonMustBeNumOrStr, {"catch"})
-		return self
-	end
-
-	if self.value == reason and self.state == enums.promiseState.rejected then
-		task.defer(callback)
-		return self
-	end
-
-	if not self._catch[reason] then
-		self._catch[reason] = {}
-	end
-
-	table.insert(self._catch[reason], callback)
-
-	return self
-end
-
---[[
-	@params
-	*	@param self : promise Promise to add callback for catching every error.
-	*	@param callback : function Function to call when promise gets rejected with any reason.
-	@brief Adds a callback that gets called when promise rejects with any reason.
-	@returns
-	*	@r1 promise self
-]]
-function constructor._catchAll(self : promise, callback : (reason : types.rejectReason | string | {}) -> ())
-	if not utils.isFunction(callback) then
-		__log__.new(callbackIsntFunction, {"catchAll"})
-		return self
-	end
-
-	if self.state == enums.promiseState.rejected then
-		task.defer(callback, self.value)
-	else
-		table.insert(self._catchAll, callback)
-	end
-
-	return self
-end
-
---[[
-	@params
-	*	@param self : promise Promise to add callback for catching unexpected errors.
-	*	@param callback : function Function to call when promise gets rejected with an unexpected reason.
-	@brief Adds a callback that gets called when promise rejects with an unexpected reason.
-	@returns
-	*	@r1 promise self
-]]
-function constructor._catchUnexpected(self : promise, callback : (reason : types.rejectReason | string | {}) -> ())
-	if not utils.isFunction(callback) then
-		__log__.new(callbackIsntFunction, {"catchUnexpected"})
-		return self
-	end
-	
-	if self.state == enums.promiseState.rejected then
-		if not self._catch[self.value] then
-			task.defer(callback, self.value)
+	local chainedPromise = constructor._new(self.traceback,
+		function(resolve: (any) -> (), reject: (string | types.enumObject | {  }) -> ()) 
 		end
-	else
-		table.insert(self._catchUnexpected, callback)
-	end
+	, true, self)
 
-	return self
-end
-
---[[
-	@params
-	*	@param self : promise Promise to add finally callback for.
-	*	@param callback : function Function to run when promise gets rejected with expected reason
-	@brief Adds a callback to promise that runs when either promise is rejected or resolved.
-	@returns
-	*	@r1 promise self
-]]
-function constructor._finally(self : promise, callback : () -> ())
-	if not utils.isFunction(callback) then
-		__log__.new(callbackIsntFunction, {"finally"})
-		return self
-	end
-
-	if self.state == enums.promiseState.pending or self.state == enums.promiseState.waiting then 
-		table.insert(self._finally, callback)
-	else
-		task.defer(callback)
-	end
-
-	return self
-end
-
---[[
-	@params
-	*	@param self : promise Promise to await for.
-	@brief Yields current thread until promise finishes.
-	@returns
-	*	@r1 thread
-]]
-function constructor._await(self : promise)
 	if self.state == enums.promiseState.resolved then
-		return true, self.value
+		bridge(chainedPromise, fullfilled, table.unpack(self.value.outcomes))
 	elseif self.state == enums.promiseState.rejected then
-		return false, self.value
+		bridge(chainedPromise, rejected, self.value.error)
+	else
+		table.insert(self._onResolved, function(...)
+			bridge(chainedPromise, fullfilled, ...)
+		end)
+		
+		table.insert(self._onRejected, function(...)
+			bridge(chainedPromise, rejected, ...)
+		end)
 	end
 
-	local thisThread = coroutine.running()
-
-	self:finally(function()
-		task.spawn(thisThread, self.state == enums.promiseState.resolved, self.value)
-	end)
-
-	return coroutine.yield()
+	return chainedPromise
 end
 
---[[
-	@params
-	*	@param self : promise Promise to run.
-	@brief Starts executing promise.
-	@returns
-	*	@r1 promise self
-]]
-function constructor._run(self : promise)
-	if self.state ~= enums.promiseState.waiting then return self end
+function constructor.__catch()
 
-	self.state = enums.promiseState.pending
-	execute(self)
-
-	return self
 end
 
---[[
-	@params
-	*	@param self : promise Promise to be canceled.
-	@brief Cancels given promise and puts it in canceled state.
-]]
-function constructor._cancel(self : promise)
-	-- Shouldnt this be a metamethod?
+function constructor.__catchAll()
 
-	if self.state ~= enums.promiseState.pending then return end
-
-	self.state = enums.promiseState.canceled
-
-	if self.myThread then
-		pcall(task.cancel, self.myThread) 
-		self.myThread = nil
-	end
-
-	for _, callback : () -> () in pairs(self._finally) do
-		if typeof(callback) == "function" then
-			task.defer(callback)
-		end
-	end
 end
 
---[[
-	@params
-	*	@param self : promise Promise to be cleaned.
-	@brief Cleans a promise and puts it in dead state.
-]]
-function constructor._cleanup(self : promise)
-	constructor._cancel(self) -- This makes sure we cancel our thread if it was in pending state.
+function constructor.__catchUnexpected()
 
-	self.state = enums.promiseState.dead
-	
-	table.clear(self._onRejected)
-	table.clear(self._onResolved)
-	table.clear(self._catch)
-	table.clear(self._catchAll)
-	table.clear(self._finally)
+end
 
-	self.myThread = nil
-	self._callback = nil
+function constructor.__finally()
+
+end
+
+function constructor._await()
+
+end
+
+function constructor._awaitAndDo()
+
 end
 
 --// Lib Constructor
+function constructor._new(
+	traceback : string?,
+	executable : (resolve : (any) -> (), reject : (types.rejectReason) -> (), onCancel : (()->())->()) -> (),
+	runImmediately : boolean, 
+	parent : any?
+) : promise
+	-- On cancel looks like a face tbh
 
---[[
-	@params
-	*	@param callback : function Callback to process in promise.
-	@brief Creates a new promise.
-	@returns
-	*	@r1 promise Created promise object.
-]]
-constructor.new				= function(
-	callback : (onResolved : (any) -> (), onRejected : (types.rejectReason | string | {}) -> ()) -> (),
-	runImmediate : boolean
-) : promise?
-	if not utils.isFunction(callback) then
+	if not utils.isFunction(executable) then
 		__log__.new(callbackIsntFunction, {})
-		return
+		return constructor._new(debug.traceback(nil, 3), function() end, false, nil):cancel()
 	end
-	
-	local data : types.promise	= {
+
+	local data : iPromise	= {
+		whoAmI				= enums.whoAmI,
+
 		state 				= enums.promiseState.waiting,
 		myThread 			= nil,
-		value 				= nil,
-		_callback			= callback,
+		value 				= {
+			outcomes		= {},
+			error			= enums.promiseRejectReason.noReason,
+			traceback		= ""
+		},
+		traceback			= traceback or debug.traceback(nil, 2),
+		daddy				= parent,
+		_executable			= executable,
+		_children			= setmetatable({}, {__mode = "k"}),
 		
 		_onResolved 		= {},
 		_onRejected 		= {},
 		_finally 			= {},
 		_catch 				= {},
 		_catchAll 			= {},
-		_catchUnexpected	= {}
+		_catchUnexpected	= {},
+		_cancellation		= nil
 	}
 
 	local self = setmetatable(data, constructor)
 
-	if runImmediate then
-		self.state = enums.promiseState.pending
-		execute(self)
+	if runImmediately then
+		 _prepareAndExecute(self, enums.executionType.immediate)
 	end
 
 	return self
 end
 
+constructor.new 			= function(
+	executable : (resolve : (any) -> (), reject : (types.rejectReason) -> ()) -> (),
+	runImmediately : boolean
+) 
+	return constructor._new(nil, executable, runImmediately, nil)
+end
+
 --// Lib Metamethods
-
---[[
-	@params
-	*	@param fullfilled : (value: any?) -> any? Callback triggered on successful resolution.
-	*	@param rejected   : (err: any?) -> any?   Callback triggered on promise failure.
-	@brief Chains a new asynchronous operation to the current promise.
-	@returns
-	*	@r1 promise A new promise instance that follows the state of the callbacks.
-	@notes
-	*	If a callback returns a promise, the chain "waits" (Unwraps) for that promise.
-	*	If no callback is provided for a state, the value/error is "Passed Through."
-	*	All callbacks are wrapped in pcall to catch runtime exceptions and trigger rejections.
-]]
-function constructor:after(fullfilled : () -> ()?, rejected : () -> ()?)
-	return constructor._after(self, fullfilled, rejected)
-end
-
---[[
-	@params
-	*	@param reason : string | number Expected reason of rejection.
-	*	@param callback : function Function to run when promise gets rejected with expected reason
-	@brief Adds an error expectation to promise, only gets called when promise gets rejected with @param reason.
-	@returns
-	*	@r1 promise self
-]]
-function constructor:catch(reason : types.rejectReason | string, callback : () -> ())
-	return constructor._catch(self, reason, callback)
-end
-
---[[
-	@params
-	*	@param callback : function Function to call when promise gets rejected with any reason.
-	@brief Adds a callback that gets called when promise rejects with any reason.
-	@returns
-	*	@r1 promise self
-]]
-function constructor:catchAll(callback : (reason : types.rejectReason | string | {}) -> ())
-	return constructor._catchAll(self, callback)
-end
-
---[[
-	@params
-	*	@param callback : function Function to call when promise gets rejected with an unexpected reason.
-	@brief Adds a callback that gets called when promise rejects with an unexpected reason.
-	@returns
-	*	@r1 promise self
-]]
-function constructor:catchUnexpected(callback : (reason : types.rejectReason | string | {}) -> ())
-	return constructor._catchUnexpected(self, callback)
-end
-
---[[
-	@params
-	*	@param callback : function Function to run when promise gets rejected with expected reason
-	@brief Adds a callback to promise that runs when either promise is rejected or resolved.
-	@returns
-	*	@r1 promise self
-]]
-function constructor:finally(callback : () -> ())
-	return constructor._finally(self, callback)
-end
-
---[[
-	@brief Yields current thread until promise finishes.
-	@returns
-	*	@r1 thread
-]]
-function constructor:await()
-	return constructor._await(self)
-end
-
---[[
-	@brief Starts executing promise.
-	@returns
-	*	@r1 promise self
-]]
-function constructor:run()
-	return constructor._run(self)
-end
-
---[[
-	@brief Cancels given promise and puts it in canceled state.
-]]
-function constructor:cancel()
-	constructor._cancel(self)
-end
-
---[[
-	@brief Cleans a promise and puts it in dead state.
-]]
-function constructor:cleanup()
-	constructor._cleanup(self)
-end
 
 --// Lib Static Functions
 
---[[
-	@params
-	*	@param list : {[number] : ()->() | promise} Functions to convert to promise or promises to race.
-	*	@param returnOutcomes : boolean Whatever to return the outcome of the promise that made @r1 promise resolve.
-	@brief Returns a promise object that will only resolve when any promise in given list resolves.
-	@returns
-	*	@r1 promise A new promise that will resolve when any promise is resolved.
-]]
-function constructor.race(
-	list : {[number] : (onResolved : (any) -> (), onRejected : (types.rejectReason | string | {}) -> () | promise) -> (...any?)},
-	returnOutcome : boolean
-)
-	--[[
-		In a given list of promises or functions,
-		does something or returns something when one of
-		them finishes or resolves.
+function constructor.race()
 
-		When a promise finishes, we should cancel others somehow?
-		What if none makes this resolve?
-	]]
-	
-	return constructor.new(function(resolve, rejected)
-		
-	end)
 end
 
---[[
-	@params
-	*	@param list : {[number] : ()->() | promise | any} Functions to convert to promise, promises or static values that will just be added as an outcome.
-	*	@param returnOutcomes : boolean Whatever to return a list of outcomes of given promises.
-	*	@param returnErrors : boolean Whatever to return the error that rejected the returned promise.
-	@brief Returns a promise object that will only resolve when all of functions in given @param list resolves succesfully too, if one of them fails,
-	*		it will reject.
-	@returns
-	*	@r1 promise A new promise that will resolve when all of promises converted from given functions resolve succesfully.
-]]
-function constructor.all(
-	list : {[number] : (onResolved : (any) -> (), onRejected : (types.rejectReason | string | {}) -> () | promise | any) -> (...any?)},
-	returnOutcomes : boolean, returnErrors : boolean
-)
-	return constructor.new(function(resolve, reject) 
-		local count = #list
-		local promisesResolved = 0
-		local didAPromiseRejected = false
-		local outcomes = {}
+function constructor.all()
 
-		if count == 0 then
-			__log__.new(expectedMoreFunctions, {})
-			resolve({})
-			return
-		end
-
-		for i = 1, count do
-			local accessed : promise | any = list[i]
-
-			if typeof(accessed) == "function" then
-				accessed = constructor.new(accessed, true)
-			end
-
-			local function handleResolve(val)
-				if didAPromiseRejected then return end
-
-				promisesResolved += 1
-
-				if returnOutcomes then outcomes[i] = val end
-				if promisesResolved == count then
-					resolve(returnOutcomes and outcomes or "success")
-				end
-			end
-			
-			if is(accessed) then
-				if accessed.state == enums.promiseState.waiting then accessed:run() end
-
-				accessed:after(
-					function(val)
-						handleResolve(val)
-					end,
-					function(err)
-						didAPromiseRejected = true
-						reject(
-							returnErrors and {enums.promiseRejectReason.gotRejectionWhileRunning, err} or enums.promiseRejectReason.gotRejectionWhileRunning
-						)
-					end
-				)
-			else
-				handleResolve(accessed)
-			end
-		end
-	end, true)
 end
 
 return constructor
